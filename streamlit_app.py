@@ -3,6 +3,13 @@ import json
 import random
 from datetime import datetime
 
+# try optional auto-refresh helper (install via requirements if missing)
+try:
+    from streamlit_autorefresh import st_autorefresh
+    _HAS_AUTOREFRESH = True
+except Exception:
+    _HAS_AUTOREFRESH = False
+
 # Page config
 st.set_page_config(page_title="Pocket Mini App", page_icon="❤️", layout="wide")
 
@@ -17,6 +24,11 @@ st.session_state.setdefault("target", random.randrange(25))  # 5x5 grid index 0.
 with st.sidebar:
     st.title("Pocket Mini App")
     st.markdown("Controls & data")
+
+    # HEART SPEED: slider to control auto-move interval (ms). Lower = faster.
+    st.markdown("### Heart speed (hardness)")
+    speed_ms = st.slider("Move interval (ms) — lower = faster", min_value=200, max_value=3000, value=900, step=100)
+
     uploaded = st.file_uploader("Upload CSV / JSON / TXT", type=["csv", "json", "txt"])
     if uploaded:
         name = uploaded.name
@@ -54,6 +66,11 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption("Tip: Upload sample_data.csv to preview CSV")
+
+# if autorefresh helper available, register it to trigger reruns
+if _HAS_AUTOREFRESH:
+    # This causes the app to rerun every speed_ms milliseconds.
+    st_autorefresh(interval=speed_ms, key="auto_refresh")
 
 # Small CSS tweaks for larger buttons and spacing
 st.markdown(
@@ -112,6 +129,18 @@ with right:
     st.metric("Score", st.session_state.score, delta=st.session_state.round - 1)
     st.metric("Round", st.session_state.round)
 
+    # Auto-move the target on each refresh to increase difficulty
+    # If streamlit_autorefresh isn't available the game still works (manual clicks only).
+    if _HAS_AUTOREFRESH:
+        # move to a different random cell (ensure it's different for visible movement)
+        old = st.session_state.target
+        new = old
+        attempt = 0
+        while new == old and attempt < 5:
+            new = random.randrange(25)
+            attempt += 1
+        st.session_state.target = new
+
     # 5x5 grid of buttons; target is a random index
     grid_cols = 5
     clicked = False
@@ -128,10 +157,11 @@ with right:
                 if idx == st.session_state.target:
                     st.session_state.score += 1
                     st.session_state.round += 1
+                    # on hit, jump to a new random cell immediately
                     new_target = random.randrange(25)
                 else:
-                    # small penalty or feedback
                     st.warning("Missed! Try again.")
+                    # on miss, move target faster by selecting a new one
                     new_target = random.randrange(25)
 
     if clicked:
