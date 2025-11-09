@@ -13,12 +13,45 @@ except Exception:
 # Page config
 st.set_page_config(page_title="Pocket Mini App", page_icon="❤️", layout="wide")
 
+# Helpers: grid math and simple Manhattan path (step-by-step) for gliding
+GRID_SIZE = 5
+
+
+def idx_to_xy(i):
+    return (i % GRID_SIZE, i // GRID_SIZE)
+
+
+def xy_to_idx(x, y):
+    return y * GRID_SIZE + x
+
+
+def compute_manhattan_path(start_idx, end_idx):
+    sx, sy = idx_to_xy(start_idx)
+    ex, ey = idx_to_xy(end_idx)
+    path = []
+    cx, cy = sx, sy
+    # prefer horizontal then vertical steps (creates a visible glide)
+    while (cx, cy) != (ex, ey):
+        if cx < ex:
+            cx += 1
+        elif cx > ex:
+            cx -= 1
+        elif cy < ey:
+            cy += 1
+        elif cy > ey:
+            cy -= 1
+        path.append(xy_to_idx(cx, cy))
+    return path
+
+
 # Initialize session state
 st.session_state.setdefault("count", 0)
 st.session_state.setdefault("notes", [])
 st.session_state.setdefault("score", 0)
 st.session_state.setdefault("round", 1)
-st.session_state.setdefault("target", random.randrange(25))  # 5x5 grid index 0..24
+st.session_state.setdefault("target", random.randrange(GRID_SIZE * GRID_SIZE))  # current visible heart
+st.session_state.setdefault("path", [])  # remaining glide steps (indices)
+st.session_state.setdefault("next_target", None)
 
 # Sidebar: upload / import / export / controls
 with st.sidebar:
@@ -27,7 +60,9 @@ with st.sidebar:
 
     # HEART SPEED: slider to control auto-move interval (ms). Lower = faster.
     st.markdown("### Heart speed (hardness)")
-    speed_ms = st.slider("Move interval (ms) — lower = faster", min_value=200, max_value=3000, value=900, step=100)
+    speed_ms = st.slider(
+        "Move interval (ms) — lower = faster", min_value=200, max_value=3000, value=700, step=100
+    )
 
     uploaded = st.file_uploader("Upload CSV / JSON / TXT", type=["csv", "json", "txt"])
     if uploaded:
@@ -37,6 +72,7 @@ with st.sidebar:
         try:
             if ext == "csv":
                 import pandas as pd
+
                 df = pd.read_csv(uploaded)
                 st.write(df.head())
             elif ext == "json":
@@ -66,6 +102,8 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption("Tip: Upload sample_data.csv to preview CSV")
+    if not _HAS_AUTOREFRESH:
+        st.info("Install streamlit-autorefresh in requirements to enable automatic gliding.")
 
 # if autorefresh helper available, register it to trigger reruns
 if _HAS_AUTOREFRESH:
@@ -76,13 +114,21 @@ if _HAS_AUTOREFRESH:
 st.markdown(
     """
     <style>
-    .stButton>button { padding: .8rem 1rem; font-size:1rem; }
-    .grid-btn { width:64px; height:64px; font-size:24px; }
-    .note-box { background:#fff; padding:8px; border-radius:8px; }
+    .stButton>button { padding: .6rem 1rem; font-size:1rem; }
+    .note-box { background:#fff; padding:8px; border-radius:8px; margin-bottom:6px; }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+# Advance glide one step on each run (autorefresh or manual rerun)
+if st.session_state.get("path"):
+    # pop next position and update visible target
+    next_pos = st.session_state["path"].pop(0)
+    st.session_state["target"] = next_pos
+    # if path emptied, clear next_target
+    if not st.session_state["path"]:
+        st.session_state["next_target"] = None
 
 # Main layout: left wide for counter/notes, right for mini-game
 left, right = st.columns([2, 1])
@@ -90,7 +136,7 @@ left, right = st.columns([2, 1])
 with left:
     st.header("Counter & Notes")
     # Counter
-    c1, c2, c3 = st.columns([1,1,1])
+    c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
         if st.button("Increment +1"):
             st.session_state.count += 1
@@ -101,7 +147,7 @@ with left:
         st.metric("Clicks", st.session_state.count)
 
     st.markdown("### Notes")
-    note_col1, note_col2 = st.columns([4,1])
+    note_col1, note_col2 = st.columns([4, 1])
     with note_col1:
         note_text = st.text_input("Write a quick note", key="note_input")
     with note_col2:
@@ -123,56 +169,67 @@ with left:
 
 with right:
     st.header("Catch the Heart 🎯")
-    st.write("Click the heart in the 5×5 grid. Each hit increases score and round.")
+    st.write("Click the heart in the 5×5 grid. Heart now glides smoothly along the grid.")
 
     # Display metrics
     st.metric("Score", st.session_state.score, delta=st.session_state.round - 1)
     st.metric("Round", st.session_state.round)
 
-    # Auto-move the target on each refresh to increase difficulty
-    # If streamlit_autorefresh isn't available the game still works (manual clicks only).
-    if _HAS_AUTOREFRESH:
-        # move to a different random cell (ensure it's different for visible movement)
-        old = st.session_state.target
-        new = old
-        attempt = 0
-        while new == old and attempt < 5:
-            new = random.randrange(25)
-            attempt += 1
-        st.session_state.target = new
+    # If no next_target/path, schedule a new random destination to glide to
+    if not st.session_state.get("path") and st.session_state.get("next_target") is None:
+        # choose a different destination
+        curr = st.session_state["target"]
+        dest = curr
+        attempts = 0
+        while dest == curr and attempts < 10:
+            dest = random.randrange(GRID_SIZE * GRID_SIZE)
+            attempts += 1
+        if dest != curr:
+            st.session_state["next_target"] = dest
+            st.session_state["path"] = compute_manhattan_path(curr, dest)
 
-    # 5x5 grid of buttons; target is a random index
-    grid_cols = 5
+    # 5x5 grid of buttons; target is a current index (gliding position)
+    grid_cols = GRID_SIZE
     clicked = False
-    new_target = st.session_state.target
+    new_target_after_click = None
 
-    for row in range(5):
-        cols = st.columns(5)
+    for row in range(GRID_SIZE):
+        cols = st.columns(GRID_SIZE)
         for col_index, col in enumerate(cols):
             idx = row * grid_cols + col_index
-            label = "❤️" if idx == st.session_state.target else "○"
+            label = "❤️" if idx == st.session_state["target"] else "○"
             btn_key = f"cell_{idx}"
             if col.button(label, key=btn_key):
                 clicked = True
-                if idx == st.session_state.target:
+                if idx == st.session_state["target"]:
                     st.session_state.score += 1
                     st.session_state.round += 1
-                    # on hit, jump to a new random cell immediately
-                    new_target = random.randrange(25)
+                    # schedule an immediate new glide destination on hit
+                    dest = random.randrange(GRID_SIZE * GRID_SIZE)
+                    attempts = 0
+                    while dest == idx and attempts < 10:
+                        dest = random.randrange(GRID_SIZE * GRID_SIZE)
+                        attempts += 1
+                    st.session_state["next_target"] = dest
+                    st.session_state["path"] = compute_manhattan_path(idx, dest)
                 else:
                     st.warning("Missed! Try again.")
-                    # on miss, move target faster by selecting a new one
-                    new_target = random.randrange(25)
+                    # on miss, nudge heart by scheduling a short move
+                    dest = random.randrange(GRID_SIZE * GRID_SIZE)
+                    st.session_state["next_target"] = dest
+                    st.session_state["path"] = compute_manhattan_path(st.session_state["target"], dest)
 
     if clicked:
-        st.session_state.target = new_target
+        # immediate rerun so user sees result without waiting for next autorefresh tick
         st.experimental_rerun()
 
     st.markdown("---")
     if st.button("Restart Game"):
         st.session_state.score = 0
         st.session_state.round = 1
-        st.session_state.target = random.randrange(25)
+        st.session_state.target = random.randrange(GRID_SIZE * GRID_SIZE)
+        st.session_state.path = []
+        st.session_state.next_target = None
         st.success("Game reset.")
 
 st.markdown("---")
